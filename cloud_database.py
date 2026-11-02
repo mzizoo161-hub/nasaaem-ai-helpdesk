@@ -12,59 +12,8 @@ from pathlib import Path
 import psycopg
 
 
-def get_database_url():
-    # Prefer a secure environment variable.
-    url = os.getenv("DATABASE_URL")
-
-    if url:
-        return url
-
-    # Support local Streamlit configuration.
-    secrets_path = (
-        Path(__file__).resolve().parent
-        / ".streamlit"
-        / "secrets.toml"
-    )
-
-    if secrets_path.is_file():
-        with secrets_path.open("rb") as file:
-            config = tomllib.load(file)
-
-        url = config.get("DATABASE_URL")
-
-        if url:
-            return url
-
-    # Support deployed Streamlit secrets.
-    try:
-        import streamlit as st
-
-        url = st.secrets.get("DATABASE_URL")
-
-        if url:
-            return url
-
-    except (ImportError, FileNotFoundError):
-        pass
-
-    raise RuntimeError(
-        "DATABASE_URL is not configured."
-    )
 
 
-def get_cloud_connection():
-    """
-    Return a PostgreSQL connection.
-
-    The caller manages the transaction and closes
-    the connection.
-    """
-
-    return psycopg.connect(
-        get_database_url(),
-        sslmode="require",
-        connect_timeout=10,
-    )
 def get_app_connection():
     """
     Connect to Supabase using the restricted
