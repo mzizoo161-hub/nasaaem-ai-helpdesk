@@ -1,8 +1,5 @@
 
-import os
 import re
-import tomllib
-from pathlib import Path
 from typing import Literal
 
 from ollama import Client, ResponseError
@@ -18,96 +15,10 @@ from pydantic import (
 # 1. CONFIGURATION
 # =====================================================
 
-# =====================================================
-# CLOUD / LOCAL AI CONFIGURATION
-# =====================================================
-
-def load_ai_config():
-    """
-    Configuration priority:
-      1. Environment variables
-      2. Streamlit Secrets, when available
-      3. Local secrets.toml for terminal testing
-      4. Local Ollama defaults
-
-    Never print or log the API key.
-    """
-
-    config = {}
-
-    # Read local secrets for ordinary Python runs.
-    secrets_path = (
-        Path(__file__).resolve().parent
-        / ".streamlit"
-        / "secrets.toml"
-    )
-
-    if secrets_path.is_file():
-        with secrets_path.open("rb") as file:
-            config.update(tomllib.load(file))
-
-    # Streamlit Secrets also supports settings
-    # provided securely by the hosting platform.
-    try:
-        import streamlit as st
-
-        for name in (
-            "OLLAMA_HOST",
-            "OLLAMA_MODEL",
-            "OLLAMA_API_KEY",
-        ):
-            if name in st.secrets:
-                config[name] = st.secrets[name]
-
-    except (ImportError, FileNotFoundError):
-        pass
-
-    for name in (
-        "OLLAMA_HOST",
-        "OLLAMA_MODEL",
-        "OLLAMA_API_KEY",
-    ):
-        if name in os.environ:
-            config[name] = os.environ[name]
-
-    return config
-
-
-AI_CONFIG = load_ai_config()
-
-MODEL_NAME = AI_CONFIG.get(
-    "OLLAMA_MODEL",
-    "qwen3:8b",
-)
-
-OLLAMA_HOST = AI_CONFIG.get(
-    "OLLAMA_HOST",
-    "http://127.0.0.1:11434",
-)
-
-OLLAMA_API_KEY = AI_CONFIG.get(
-    "OLLAMA_API_KEY",
-    "",
-)
-
-if OLLAMA_HOST.rstrip("/") == "https://ollama.com":
-
-    if not OLLAMA_API_KEY:
-        raise RuntimeError(
-            "OLLAMA_API_KEY is required for Ollama Cloud."
-        )
-
-    headers = {
-        "Authorization": f"Bearer {OLLAMA_API_KEY}"
-    }
-
-else:
-    headers = {}
-
+MODEL_NAME = "qwen3:8b"
 
 client = Client(
-    host=OLLAMA_HOST,
-    headers=headers,
+    host="http://127.0.0.1:11434",
     timeout=180,
 )
 

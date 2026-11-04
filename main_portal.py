@@ -1,3 +1,4 @@
+from prototype_auth import authenticate_prototype_employee
 
 import sqlite3
 import psycopg
@@ -8,12 +9,13 @@ from auth import authenticate_by_phone_employee_id
 from cloud_employees import authenticate_cloud_employee, load_cloud_user
 
 # Cloud mode is intended for synthetic-data testing only.
-USE_CLOUD_DEMO = True
-
+USE_CLOUD_DEMO = False
 # Select SQLite or synthetic Supabase backend.
 from helpdesk_backend import get_backend_functions
 
-backend = get_backend_functions(USE_CLOUD_DEMO)
+# Synthetic 150-account cloud backend (not the legacy TEST001 demo).
+from prototype_backend import get_backend_functions as get_prototype_backend
+backend = get_prototype_backend()
 from classifier_test import classify_request
 
 from database import (
@@ -44,11 +46,10 @@ from notifications import (
 st.set_page_config(
     page_title="Al Nasaaem Helpdesk",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-if not USE_CLOUD_DEMO:
-    initialize_database()
-    initialize_notifications()
+# The hosted application uses persistent PostgreSQL; no SQLite initialization.
 
 if "main_user" not in st.session_state:
     st.session_state.main_user = None
@@ -83,6 +84,25 @@ def load_user(user_id):
     if USE_CLOUD_DEMO:
         return load_cloud_user(user_id)
 
+    from prototype_cloud import get_prototype_connection
+    from psycopg.rows import dict_row
+
+    with get_prototype_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                '''
+                SELECT
+                    id, username, full_name,
+                    role, department, is_active
+                FROM nasaaem_prototype.users
+                WHERE id = %s
+                ''',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+
+    return row
+
     with get_employee_connection() as connection:
         connection.row_factory = sqlite3.Row
 
@@ -105,44 +125,18 @@ def load_user(user_id):
 
 
 def get_saved_tickets(request_id):
-    """
-    Read generated tickets from the selected backend.
-    """
-
-    if USE_CLOUD_DEMO:
-        from cloud_database import get_app_connection
-        from psycopg.rows import dict_row
-
-        with get_app_connection() as conn:
-            with conn.cursor(row_factory=dict_row) as cursor:
-                cursor.execute(
-                    """
-                    SELECT id, department, status
-                    FROM helpdesk.tickets
-                    WHERE request_id = %s
-                    ORDER BY id
-                    """,
-                    (request_id,),
-                )
-                return cursor.fetchall()
-
-    with get_ticket_connection() as connection:
-        connection.row_factory = sqlite3.Row
-
-        rows = connection.execute(
-            """
-            SELECT
-                id,
-                department,
-                status
-            FROM tickets
-            WHERE request_id = ?
-            ORDER BY id
-            """,
-            (request_id,),
-        ).fetchall()
-
-    return [dict(row) for row in rows]
+    """Read saved synthetic tickets from the persistent cloud database."""
+    from psycopg.rows import dict_row
+    from prototype_cloud import get_prototype_connection
+    with get_prototype_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                """SELECT id, department, status
+                   FROM nasaaem_prototype.tickets
+                   WHERE request_id = %s ORDER BY id""",
+                (request_id,),
+            )
+            return cursor.fetchall()
 
 
 # =====================================================
@@ -186,7 +180,7 @@ if st.session_state.main_user is None:
                 employee_id=employee_id,
             )
         else:
-            user = authenticate_by_phone_employee_id(
+            user = authenticate_prototype_employee(
                 phone_number=phone_number,
                 employee_id=employee_id,
             )
@@ -244,7 +238,10 @@ is_admin = user["role"] == "Admin"
 
 can_use_dashboard = (
     is_admin
-    or user["department"] in ALLOWED_DEPARTMENTS
+    or (
+        user["role"] == "Staff"
+        and user["department"] in ALLOWED_DEPARTMENTS
+    )
 )
 
 # Use the internal user ID to identify ticket
@@ -252,11 +249,7 @@ can_use_dashboard = (
 
 # Preserve legacy SQLite identity.
 # Use the synthetic hospital ID in cloud demo mode.
-user_identity = (
-    "TEST001"
-    if USE_CLOUD_DEMO
-    else f"USER-{user['id']}"
-)
+user_identity = f"USER-{user['id']}"
 
 
 # =====================================================
@@ -284,7 +277,7 @@ with notification_column:
             user["id"]
         )
 
-    except (sqlite3.Error, psycopg.Error):
+    except (sqlite3.Error, psycopg.Error, PermissionError):
         unread_count = None
 
     notification_label = (
@@ -306,7 +299,7 @@ with notification_column:
                 user["id"]
             )
 
-        except (sqlite3.Error, psycopg.Error):
+        except (sqlite3.Error, psycopg.Error, PermissionError):
 
             st.error(
                 "Unable to load notifications."
@@ -341,7 +334,7 @@ with notification_column:
                     )
 
                     st.caption(
-                        notification["created_at"]
+                        str(notification["created_at"])
                     )
 
                     if not notification["is_read"]:
@@ -358,7 +351,7 @@ with notification_column:
                                     user_id=user["id"],
                                 )
 
-                            except (sqlite3.Error, psycopg.Error):
+                            except (sqlite3.Error, psycopg.Error, PermissionError):
 
                                 st.error(
                                     "Could not update notification."
@@ -474,6 +467,8 @@ if st.session_state.main_page == "Home":
                     "No department assigned to your account."
                 )
 
+    if is_admin and st.button("Open Admin Overview", use_container_width=True):
+        navigate("Admin")
     st.stop()
 
 
@@ -614,7 +609,7 @@ if st.session_state.main_page == "Chat":
 
                     except (
                         ValueError,
-                        (sqlite3.Error, psycopg.Error),
+                        (sqlite3.Error, psycopg.Error, PermissionError),
                     ):
 
                         st.error(
@@ -646,7 +641,7 @@ if st.session_state.main_page == "Chat":
                                     f"- {ticket['department']}"
                                 )
 
-                        except (sqlite3.Error, psycopg.Error):
+                        except (sqlite3.Error, psycopg.Error, PermissionError):
 
                             st.warning(
                                 "تم حفظ الطلب لكن تعذر "
@@ -681,7 +676,7 @@ elif st.session_state.main_page == "My Tickets":
 
     except (
         ValueError,
-        (sqlite3.Error, psycopg.Error),
+        (sqlite3.Error, psycopg.Error, PermissionError),
     ):
 
         st.error(
@@ -732,95 +727,62 @@ elif st.session_state.main_page == "My Tickets":
                         f"**Status:** {ticket['status']}"
                     )
 
-                # Requester confirms whether solved
+                # Two-way ticket conversation (readable by requester and assigned staff).
+                st.markdown("#### Ticket conversation")
+                try:
+                    messages = backend["get_ticket_messages"](ticket["id"])
+                    existing_feedback = backend["get_ticket_feedback"](ticket["id"])
+                except (ValueError, PermissionError, psycopg.Error):
+                    messages = []
+                    existing_feedback = None
+                    st.warning("Could not load ticket conversation.")
+                for entry in messages:
+                    st.caption(f"{entry['author']} · {entry['created_at']}")
+                    st.write(entry['body'])
+                if existing_feedback and existing_feedback['rating']:
+                    st.caption(f"Requester feedback: {existing_feedback['rating']}/5")
+                if ticket["status"] != "Resolved":
+                    with st.form(f"reply_form_{ticket['id']}", clear_on_submit=True):
+                        reply = st.text_area("Reply / add details", max_chars=2000)
+                        send = st.form_submit_button("Send message")
+                    if send:
+                        try:
+                            backend['add_ticket_message'](ticket['id'], reply)
+                        except (ValueError, PermissionError, psycopg.Error):
+                            st.error("Unable to send message.")
+                        else:
+                            st.rerun()
 
-                if (
-                    ticket["status"]
-                    == "Pending Confirmation"
-                ):
-
+                # Requester confirms solution and leaves feedback.
+                if ticket["status"] == "Pending Confirmation":
                     st.divider()
-
-                    st.markdown(
-                        "### هل تم حل المشكلة؟"
-                    )
-
-                    yes_col, no_col = st.columns(2)
-
-                    # YES
-
-                    with yes_col:
-
-                        if st.button(
-                            "Yes - Solved",
-                            key=f"yes_{ticket['id']}",
-                            type="primary",
-                            use_container_width=True,
-                        ):
-
-                            try:
-
-                                success = backend["confirm_ticket"](
-                                    ticket_id=ticket["id"],
-                                    employee_id=user_identity,
-                                    solved=True,
-                                )
-
-                            except (
-                                ValueError,
-                                (sqlite3.Error, psycopg.Error),
-                            ):
-
-                                st.error(
-                                    "Unable to confirm ticket."
-                                )
-
-                            else:
-
-                                st.session_state["notice"] = (
-                                    "Ticket resolved successfully."
-                                    if success
-                                    else "Confirmation not accepted."
-                                )
-
-                                st.rerun()
-
-                    # NO
-
-                    with no_col:
-
-                        if st.button(
-                            "No - Not Solved",
-                            key=f"no_{ticket['id']}",
-                            use_container_width=True,
-                        ):
-
-                            try:
-
-                                success = backend["confirm_ticket"](
-                                    ticket_id=ticket["id"],
-                                    employee_id=user_identity,
-                                    solved=False,
-                                )
-
-                            except (
-                                ValueError,
-                                (sqlite3.Error, psycopg.Error),
-                            ):
-
-                                st.error(
-                                    "Unable to reopen ticket."
-                                )
-
-                            else:
-
-                                st.session_state["notice"] = (
-                                    "Ticket reopened for follow-up."
-                                    if success
-                                    else "Confirmation not accepted."
-                                )
-
-                                st.rerun()
+                    st.markdown("#### هل تم حل المشكلة؟ / Was your issue solved?")
+                    with st.form(f"confirm_form_{ticket['id']}"):
+                        verdict = st.radio("Problem solved?", ["Yes — Solved", "No — Still a problem"])
+                        rating = st.select_slider("Service rating", options=[1, 2, 3, 4, 5], value=5)
+                        feedback_note = st.text_area("Feedback or what still needs fixing", max_chars=2000)
+                        submitted_feedback = st.form_submit_button("Send confirmation & feedback", type="primary")
+                    if submitted_feedback:
+                        solved = verdict.startswith("Yes")
+                        try:
+                            success = backend['confirm_ticket_with_feedback'](
+                                ticket_id=ticket['id'],
+                                employee_id=user_identity,
+                                solved=solved,
+                                rating=rating,
+                                comment=feedback_note,
+                            )
+                        except ValueError as exc:
+                            st.warning(str(exc))
+                        except (PermissionError, psycopg.Error):
+                            st.error("Could not save your feedback.")
+                        else:
+                            st.session_state['notice'] = (
+                                "Ticket resolved — thanks for your feedback!" if success and solved
+                                else "Ticket reopened. The department has been notified." if success
+                                else "Ticket state changed; refresh and try again."
+                            )
+                            st.rerun()
 
                 elif ticket["status"] == "Resolved":
 
@@ -908,7 +870,7 @@ elif st.session_state.main_page == "Dashboard":
 
     except (
         ValueError,
-        (sqlite3.Error, psycopg.Error),
+        (sqlite3.Error, psycopg.Error, PermissionError),
     ):
 
         st.error(
@@ -1011,6 +973,31 @@ elif st.session_state.main_page == "Dashboard":
                         f"{ticket['assigned_to'] or 'Unassigned'}"
                     )
 
+                    # Two-way ticket conversation for staff/admin.
+                    st.markdown("**Conversation**")
+                    try:
+                        for entry in backend['get_ticket_messages'](ticket['id']):
+                            st.caption(f"{entry['author']} · {entry['created_at']}")
+                            st.write(entry['body'])
+                        requester_feedback = backend['get_ticket_feedback'](ticket['id'])
+                        if requester_feedback:
+                            st.caption(f"Feedback rating: {requester_feedback['rating'] or '—'}/5")
+                            if requester_feedback['comment']:
+                                st.write(requester_feedback['comment'])
+                    except (ValueError, PermissionError, psycopg.Error):
+                        st.warning("Conversation not available")
+                    if ticket['status'] != 'Resolved':
+                        with st.form(f"staff_reply_{ticket['id']}", clear_on_submit=True):
+                            reply = st.text_area("Reply to requester", max_chars=2000)
+                            send = st.form_submit_button("Send reply")
+                        if send:
+                            try:
+                                backend['add_ticket_message'](ticket['id'], reply)
+                            except (ValueError, PermissionError, psycopg.Error):
+                                st.error("Could not send reply.")
+                            else:
+                                st.rerun()
+
                     # NEW / REOPENED
 
                     if ticket["status"] in (
@@ -1034,7 +1021,7 @@ elif st.session_state.main_page == "Dashboard":
 
                             except (
                                 ValueError,
-                                (sqlite3.Error, psycopg.Error),
+                                (sqlite3.Error, psycopg.Error, PermissionError),
                             ):
 
                                 st.error(
@@ -1087,7 +1074,7 @@ elif st.session_state.main_page == "Dashboard":
 
                                 except (
                                     ValueError,
-                                    (sqlite3.Error, psycopg.Error),
+                                    (sqlite3.Error, psycopg.Error, PermissionError),
                                 ):
 
                                     st.error(
@@ -1136,6 +1123,35 @@ elif st.session_state.main_page == "Dashboard":
                         )
 
 
+
+
+# Admin overview — read-only by design; never exposes stored password hashes.
+elif st.session_state.main_page == "Admin":
+    if not is_admin:
+        st.error("Access denied")
+        st.stop()
+    from prototype_cloud import get_prototype_connection
+    from psycopg.rows import dict_row
+    st.subheader("Synthetic Cloud Admin Overview")
+    st.caption("Prototype only. Two-field login is not secure for real employee data.")
+    with get_prototype_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cursor:
+            cursor.execute("""SELECT role, COUNT(*) AS total
+                              FROM nasaaem_prototype.users GROUP BY role""")
+            role_counts = {row['role']: row['total'] for row in cursor.fetchall()}
+            cursor.execute("""SELECT department, status, COUNT(*) AS total
+                              FROM nasaaem_prototype.tickets
+                              GROUP BY department, status ORDER BY department, status""")
+            summaries = cursor.fetchall()
+    cols = st.columns(3)
+    for col, role in zip(cols, ('Employee','Staff','Admin')):
+        col.metric(role, role_counts.get(role, 0))
+    st.subheader('Department ticket status')
+    if summaries:
+        st.dataframe(summaries, use_container_width=True, hide_index=True)
+    else:
+        st.info('No tickets yet')
+
 # =====================================================
 # 11. FOOTER
 # =====================================================
@@ -1143,7 +1159,7 @@ elif st.session_state.main_page == "Dashboard":
 st.divider()
 
 st.caption(
-    "Al Nasaaem Helpdesk - Local Prototype"
+    "Al Nasaaem Helpdesk - Synthetic Cloud Prototype"
 )
 
 st.caption(

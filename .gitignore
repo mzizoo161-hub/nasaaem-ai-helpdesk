@@ -1,43 +1,13 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-env/
-.pytest_cache/
-
-# Local databases and backups
+# Never commit credentials or personal data
+.streamlit/secrets.toml
+.streamlit/*.bak
+.env
+*.env
 *.db
 *.db-*
-*.sqlite
-*.sqlite3
 db/
-db_backups/
-
-# Environment variables and secrets
-.env
-.env.*
-!.env.example
-.streamlit/secrets.toml
-*.pem
-*.key
-
-# macOS and editors
-.DS_Store
-.vscode/
-.idea/
-
-# Temporary files
-*.log
-*.tmp
-
-# Local development copies
-*_before_split.py
-
-# Nasaaem local development backups
-*_before_*.py
-*_backup_*.py
+*.csv
 *.bak
-
-# Synthetic CSV stays local until reviewed
-synthetic_demo_employees.csv
+*.zip
+__pycache__/
+*.pyc
